@@ -172,6 +172,28 @@ impl TryFrom<&str> for Delay {
 }
 
 impl fmt::Display for Datetime<'_> {
+    // If Chrono is enabled, replace a missing or incorrect dayname with the
+    // correct one.
+    #[cfg(feature = "chrono")]
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let date: ::chrono::NaiveDate = self.into();
+        match (self.hour, self.minute) {
+            (Some(hour), Some(minute)) => {
+                let datetime = ::chrono::NaiveDateTime::new(
+                    date,
+                    ::chrono::NaiveTime::from_hms(hour.into(), minute.into(), 0),
+                );
+                write!(f, "{}", datetime.format("%Y-%m-%d %a %H:%M"))?;
+            }
+            _ => {
+                write!(f, "{}", date.format("%Y-%m-%d %a"))?;
+            }
+        }
+        Ok(())
+    }
+
+    // If Chrono is not enabled, just use the same dayname that we parsed.
+    #[cfg(not(feature = "chrono"))]
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{:04}-{:02}-{:02}", self.year, self.month, self.day,)?;
         if !self.dayname.is_empty() {
@@ -1318,61 +1340,86 @@ fn test_format_delay() {
 
 #[test]
 fn test_format_datetime() {
-    for s in &[
-        "2020-01-01",
-        "2019-05-09 Zeepsday",
-        "2025-09-09 Mon 03:05",
-        "2025-09-09 03:05",
+    for (input, expected) in &[
+        (
+            "2020-01-01",
+            #[cfg(not(feature = "chrono"))]
+            "2020-01-01",
+            #[cfg(feature = "chrono")]
+            "2020-01-01 Wed",
+        ),
+        (
+            "2019-05-09 Zeepsday",
+            #[cfg(not(feature = "chrono"))]
+            "2019-05-09 Zeepsday",
+            #[cfg(feature = "chrono")]
+            "2019-05-09 Thu",
+        ),
+        (
+            "2019-05-09 Mon",
+            #[cfg(not(feature = "chrono"))]
+            "2019-05-09 Mon",
+            #[cfg(feature = "chrono")]
+            "2019-05-09 Thu",
+        ),
+        ("2025-09-09 Tue 03:05", "2025-09-09 Tue 03:05"),
+        (
+            "2025-09-09 03:50",
+            #[cfg(not(feature = "chrono"))]
+            "2025-09-09 03:50",
+            #[cfg(feature = "chrono")]
+            "2025-09-09 Tue 03:50",
+        ),
     ] {
-        assert_eq!(*s, Datetime::parse(*s).unwrap().to_string());
+        assert_eq!(*expected, Datetime::parse(*input).unwrap().to_string());
     }
 }
 
 #[test]
 fn test_format_timestamp() {
-    for s in &[
-        "<2017-02-23>",
-        "[2017-02-23]",
-        "<2016-05-29 Mon>",
-        "[2016-05-29 Mon]",
-        "<2020-03-05 .+1w -1d>",
-        "[2020-03-05 .+1w -1d]",
-        "<1990-01-01 Fri 03:55>",
-        "[1990-01-01 Fri 03:55]",
-        "<1991-01-01 Mon 03:55-04:00>",
-        "[1991-01-01 Mon 03:55-04:00]",
-        "<1991-01-01 Mon 03:55>--<1992-02-03 Tue 05:59>",
-        "[1991-01-01 Mon 03:55]--[1992-02-03 Tue 05:59]",
-        "[1991-01-01 Mon]--[1992-02-03 Tue 05:59]",
-        "[1991-01-01 Mon 03:55]--[1992-02-03 Tue]",
-        "<1991-01-01 Mon 03:55 +1d -1w>--<1992-02-03 Tue +2w -2d>",
+    for (input, expected) in &[
+        (
+            "<2017-02-23>",
+            #[cfg(feature = "chrono")]
+            "<2017-02-23 Thu>",
+            #[cfg(not(feature = "chrono"))]
+            "<2017-02-23>",
+        ),
+        (
+            "[2020-03-05 .+1w -1d]",
+            #[cfg(feature = "chrono")]
+            "[2020-03-05 Thu .+1w -1d]",
+            #[cfg(not(feature = "chrono"))]
+            "[2020-03-05 .+1w -1d]",
+        ),
+        (
+            "<1991-1-1 5:05-7:09>",
+            #[cfg(feature = "chrono")]
+            "<1991-01-01 Tue 05:05-07:09>",
+            #[cfg(not(feature = "chrono"))]
+            "<1991-01-01 05:05-07:09>",
+        ),
+        ("[1992-01-01 Wed -1d +1w]", "[1992-01-01 Wed +1w -1d]"),
     ] {
-        assert_eq!(*s, Timestamp::parse(s).unwrap().to_string());
+        assert_eq!(*expected, Timestamp::parse(*input).unwrap().to_string());
     }
 
-    assert_eq!(
-        "<1991-01-01 Mon 03:55-04:00>",
-        Timestamp::parse("<1991-01-01 Mon 03:55>--<1991-01-01 Mon 04:00>")
-            .unwrap()
-            .to_string()
-    );
-
-    assert_eq!(
-        "<1991-01-01 +1d -1w>",
-        Timestamp::parse("<1991-01-01 -1w +1d>")
-            .unwrap()
-            .to_string()
-    );
-
-    assert_eq!(
-        "<1991-01-01 05:05>",
-        Timestamp::parse("<1991-01-01 5:05>").unwrap().to_string()
-    );
-
-    assert_eq!(
-        "<1991-01-01 05:05-07:09>",
-        Timestamp::parse("<1991-1-1 5:05-7:09>")
-            .unwrap()
-            .to_string()
-    );
+    for identity in &[
+        "<1990-01-01 Mon 03:55>",
+        "[1990-01-01 Mon 03:55]",
+        "<1991-01-01 Tue 03:55-04:00>",
+        "[1991-01-01 Tue 03:55-04:00]",
+        "<1991-01-01 Tue 03:55>--<1992-02-03 Mon 05:59>",
+        "[1991-01-01 Tue 03:55]--[1992-02-03 Mon 05:59]",
+        "[1991-01-01 Tue]--[1992-02-03 Mon 05:59]",
+        "[1991-01-01 Tue 03:55]--[1992-02-03 Mon]",
+        "<1991-01-01 Tue 03:55 +1d -1w>--<1992-02-03 Mon +2w -2d>",
+        "<2016-05-29 Sun>",
+        "[2016-05-29 Sun]",
+        "<1991-01-01 Tue 03:55-04:00>",
+        "<1991-01-02 Wed +1w -1d>",
+        "<1991-01-01 Tue 05:05>",
+    ] {
+        assert_eq!(*identity, Timestamp::parse(*identity).unwrap().to_string());
+    }
 }
